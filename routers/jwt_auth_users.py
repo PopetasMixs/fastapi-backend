@@ -1,7 +1,7 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from jose import jwt
+from jose import jwt, JWTError
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
 
@@ -9,7 +9,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_DURATION = 1
 SECRET_KEY = "b66720de3cd3b8521c6190d26479fb7defc6eac9744d1e8541f0ab5d32ef0f6e"
 
-app = FastAPI()
+router = APIRouter()
 
 oauth2 = OAuth2PasswordBearer(tokenUrl='login')
 
@@ -26,6 +26,46 @@ class UserDTO(BaseModel):
 
 class UserDAO(UserDTO):
     password: str
+
+
+def search_user_dao(username: str):
+    if username in users_db:
+        return UserDAO(**users_db[username])
+
+
+def search_user_dto(username: str):
+    if username in users_db:
+        return UserDTO(**users_db[username])
+
+
+async def auth_user(token: str = Depends(oauth2)):
+    exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid authentication credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    try:
+        username = jwt.decode(token,
+                              SECRET_KEY,
+                              algorithms=[ALGORITHM]).get('sub')
+        if username is None:
+            raise exception
+
+    except JWTError:
+        raise exception
+
+    return search_user_dto(username)
+
+
+async def current_user(user: UserDTO = Depends(auth_user)):
+    if user.disabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Inactive user",
+        )
+
+    return user
 
 
 users_db = {
@@ -51,7 +91,7 @@ def search_user_dao(username: str):
         return UserDAO(**users_db[username])
 
 
-@app.post('/login')
+@router.post('/login')
 async def login(form: OAuth2PasswordRequestForm = Depends()):
     user_db = users_db.get(form.username)
     if not user_db:
@@ -72,3 +112,8 @@ async def login(form: OAuth2PasswordRequestForm = Depends()):
                    'exp': datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_DURATION)}
 
     return {'access_token': jwt.encode(acces_token, SECRET_KEY, algorithm=ALGORITHM), 'token_type': 'bearer'}
+
+
+@router.get('/users/me')
+async def me(user: UserDTO = Depends(current_user)):
+    return user
